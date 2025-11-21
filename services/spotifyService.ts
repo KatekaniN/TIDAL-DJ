@@ -1,6 +1,6 @@
 
-const CLIENT_ID = '3c3452270acb4b7bb33c683d4a713b6b';
-const CLIENT_SECRET = 'd17ed562f325411eb44fc2d840967273';
+const CLIENT_ID = "";
+const CLIENT_SECRET = '';
 
 let accessToken: string | null = null;
 let tokenExpiry: number = 0;

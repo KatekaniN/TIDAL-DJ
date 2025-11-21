@@ -1,8 +1,13 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { PlaybackState, Track, DJSession } from './types';
 import * as GeminiService from './services/geminiService';
 import DjBooth from './components/DjBooth';
 import Player from './components/Player';
+
+// A fallback track (Lo-Fi Beat) to play if Spotify preview is missing
+// using a public domain or creative commons sample URL.
+const FALLBACK_AUDIO_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3"; 
 
 const App: React.FC = () => {
   // --- State ---
@@ -15,7 +20,8 @@ const App: React.FC = () => {
 
   // --- Refs for Audio Management ---
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const voiceSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const musicAudioRef = useRef<HTMLAudioElement | null>(null);
   const trackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Helpers ---
@@ -26,11 +32,24 @@ const App: React.FC = () => {
     return audioContextRef.current;
   };
 
+  const stopAllAudio = () => {
+    // Stop Voice
+    if (voiceSourceRef.current) {
+      try { voiceSourceRef.current.stop(); } catch(e) {}
+    }
+    // Stop Music
+    if (musicAudioRef.current) {
+      musicAudioRef.current.pause();
+      musicAudioRef.current = null;
+    }
+    // Clear Timers
+    if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+  };
+
   // --- Core Orchestration ---
 
   const startSession = async (prompt: string) => {
     // CRITICAL: Resume AudioContext immediately on user interaction (click)
-    // Browsers will block audio if we wait for the API call first.
     const ctx = getAudioContext();
     try {
       if (ctx.state === 'suspended') {
@@ -69,14 +88,11 @@ const App: React.FC = () => {
   };
 
   const playCommentary = (buffer: AudioBuffer, text: string) => {
+    stopAllAudio();
     setPlaybackState(PlaybackState.PLAYING_COMMENTARY);
     setDjText(text);
 
     const ctx = getAudioContext();
-    if (audioSourceRef.current) {
-        try { audioSourceRef.current.stop(); } catch(e) {}
-    }
-    
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
@@ -85,11 +101,12 @@ const App: React.FC = () => {
       playNextTrack();
     };
 
-    audioSourceRef.current = source;
+    voiceSourceRef.current = source;
     source.start();
   };
 
   const playNextTrack = async () => {
+    stopAllAudio();
     setDjText(null);
     
     setQueue(prevQueue => {
@@ -99,16 +116,30 @@ const App: React.FC = () => {
       setCurrentTrack(next);
       setPlaybackState(PlaybackState.PLAYING_TRACK);
       
-      // Simulate Track Duration
-      // In a real app, this would be an <audio> element or SDK event
-      if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+      // Determine Audio URL (Real Spotify Preview or Fallback)
+      const audioUrl = next.previewUrl || FALLBACK_AUDIO_URL;
       
-      // Mock duration: 10 seconds for demo purposes, or use a fraction of the real duration
-      const simulatedDuration = 10000; 
+      const audio = new Audio(audioUrl);
+      audio.volume = 0.6;
       
-      trackTimerRef.current = setTimeout(() => {
+      // Play the audio
+      audio.play().catch(e => console.warn("Auto-play failed or blocked", e));
+      
+      // When audio ends (or after 30s for fallback), go next
+      audio.onended = () => {
         handleTrackEnd(next, rest);
-      }, simulatedDuration);
+      };
+
+      // Safety timeout in case audio hangs or is infinite stream
+      // Spotify previews are 30s. Fallback is longer, so we cap it at 30s to keep flow.
+      trackTimerRef.current = setTimeout(() => {
+          if (!audio.paused) {
+              audio.pause();
+              handleTrackEnd(next, rest);
+          }
+      }, 30000);
+
+      musicAudioRef.current = audio;
 
       return rest;
     });
@@ -116,8 +147,8 @@ const App: React.FC = () => {
 
   const handleTrackEnd = async (finishedTrack: Track, remainingQueue: Track[]) => {
     // Decide whether to play commentary or next track
-    // For demo: Play commentary every 2 tracks or if queue is low
-    const shouldPlayCommentary = Math.random() > 0.5; 
+    // Play commentary with 60% chance if we have tracks left
+    const shouldPlayCommentary = Math.random() > 0.4; 
 
     if (remainingQueue.length > 0) {
       const nextTrack = remainingQueue[0];
@@ -137,34 +168,40 @@ const App: React.FC = () => {
         playNextTrack();
       }
     } else {
-      // End of Queue - In real app, generate more tracks here
       setPlaybackState(PlaybackState.IDLE);
-      alert("Session ended. (Queue refill logic would go here)");
+      alert("Session ended. In a full version, we'd fetch more tracks now!");
     }
   };
 
   const handleSkip = () => {
-    if (audioSourceRef.current) {
-        try { audioSourceRef.current.stop(); } catch(e) {}
-    }
-    if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+    stopAllAudio();
     playNextTrack();
   };
 
   const handleTogglePlay = () => {
     const ctx = getAudioContext();
+    
     if (playbackState === PlaybackState.PLAYING_TRACK) {
+       // Pause
        setPlaybackState(PlaybackState.PAUSED);
-       // Pause logic for timer... (Simplified: just stop timer)
+       if (musicAudioRef.current) musicAudioRef.current.pause();
        if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
        if (ctx.state === 'running') ctx.suspend();
+
     } else if (playbackState === PlaybackState.PAUSED) {
+       // Resume
        setPlaybackState(PlaybackState.PLAYING_TRACK);
        if (ctx.state === 'suspended') ctx.resume();
-       // Resume logic (Simplified: just restart next track call)
-       trackTimerRef.current = setTimeout(() => {
-          if (currentTrack && queue) handleTrackEnd(currentTrack, queue);
-       }, 2000);
+       
+       if (musicAudioRef.current) {
+         musicAudioRef.current.play();
+         
+         // Restore timeout for remaining duration? 
+         // For simplicity in this demo, we restart the safety timer or rely on onended
+       } else {
+          // Should not happen in new logic, but just in case
+          playNextTrack();
+       }
     }
   };
 

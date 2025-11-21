@@ -1,12 +1,14 @@
+
 export interface Track {
   id: string;
   title: string;
   artist: string;
   album: string;
-  duration: number; // In seconds (simulated)
+  duration: number; // In seconds (simulated or real preview length)
   coverUrl: string;
   moodTag: string;
   reason?: string; // Why the AI picked this
+  previewUrl?: string | null; // Spotify preview URL
 }
 
 export enum PlaybackState {

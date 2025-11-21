@@ -1,6 +1,8 @@
+
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Track } from "../types";
 import { decodeBase64, decodeAudioData } from "./audioUtils";
+import { searchSpotifyTrack } from "./spotifyService";
 
 // Helper to get the client instance with the latest key
 const getAiClient = () => {
@@ -15,6 +17,7 @@ const getRandomImage = (id: number) => `https://picsum.photos/seed/${id}/400/400
 
 /**
  * Generates a playlist based on the user's mood/prompt.
+ * Uses Gemini to pick songs, then Spotify to fetch metadata.
  */
 export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[], introScript: string }> => {
   const ai = getAiClient();
@@ -23,7 +26,7 @@ export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[],
     You are a world-class radio DJ for a high-end music streaming service called TIDAL.
     The user wants a session with this vibe: "${mood}".
     
-    1. Create a playlist of 5 distinct songs that fit this vibe perfectly.
+    1. Create a playlist of 5 distinct, real songs that fit this vibe perfectly.
     2. Write a short, punchy, 2-sentence intro script for yourself (The AI DJ) to start the session. Keep it cool, welcome the listener, and mention the vibe. Do NOT use "DJ:" prefix.
     
     Output JSON format:
@@ -31,9 +34,8 @@ export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[],
       "introScript": "string",
       "tracks": [
         {
-          "title": "string",
-          "artist": "string",
-          "album": "string",
+          "title": "string (Exact song title)",
+          "artist": "string (Exact artist name)",
           "moodTag": "string (e.g. 'Gritty', 'Chill')",
           "reason": "string (short reason for selection)"
         }
@@ -41,59 +43,81 @@ export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[],
     }
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          introScript: { type: Type.STRING },
-          tracks: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                artist: { type: Type.STRING },
-                album: { type: Type.STRING },
-                moodTag: { type: Type.STRING },
-                reason: { type: Type.STRING },
+  let json;
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            introScript: { type: Type.STRING },
+            tracks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  artist: { type: Type.STRING },
+                  moodTag: { type: Type.STRING },
+                  reason: { type: Type.STRING },
+                }
               }
             }
           }
         }
       }
-    }
-  });
+    });
 
-  let jsonStr = response.text || "{}";
-  // Defensive cleanup in case of markdown wrapping
-  jsonStr = jsonStr.replace(/```json\n?|```/g, "").trim();
-
-  let json;
-  try {
+    let jsonStr = response.text || "{}";
+    jsonStr = jsonStr.replace(/```json\n?|```/g, "").trim();
     json = JSON.parse(jsonStr);
-  } catch (e) {
-    console.error("Failed to parse JSON:", jsonStr);
-    throw new Error("AI response was not valid JSON.");
+  } catch (e: any) {
+    console.error("Gemini generation failed:", e);
+    throw new Error("Failed to generate playlist data.");
   }
-  
-  // Map to our Track interface
-  const tracks: Track[] = (json.tracks || []).map((t: any, i: number) => ({
-    id: `track-${Date.now()}-${i}`,
-    title: t.title || "Unknown Title",
-    artist: t.artist || "Unknown Artist",
-    album: t.album || "Unknown Album",
-    duration: 180 + Math.floor(Math.random() * 60), // Simulated duration 3-4 mins
-    coverUrl: getRandomImage(Math.floor(Math.random() * 10000)),
-    moodTag: t.moodTag || "Vibe",
-    reason: t.reason
-  }));
+
+  const rawTracks = json.tracks || [];
+  const enrichedTracks: Track[] = [];
+
+  // Enrich with Spotify Data
+  for (let i = 0; i < rawTracks.length; i++) {
+    const t = rawTracks[i];
+    const query = `${t.title} ${t.artist}`;
+    const spotifyData = await searchSpotifyTrack(query);
+
+    if (spotifyData) {
+      enrichedTracks.push({
+        id: `track-${Date.now()}-${i}`,
+        title: spotifyData.title,
+        artist: spotifyData.artist,
+        album: spotifyData.album,
+        duration: spotifyData.duration, // Using simulated duration or preview length
+        coverUrl: spotifyData.coverUrl,
+        moodTag: t.moodTag || "Vibe",
+        reason: t.reason,
+        previewUrl: spotifyData.previewUrl
+      });
+    } else {
+      // Fallback if Spotify fails
+      enrichedTracks.push({
+        id: `track-${Date.now()}-${i}`,
+        title: t.title || "Unknown Title",
+        artist: t.artist || "Unknown Artist",
+        album: "Unknown Album",
+        duration: 30000, // Default 30s
+        coverUrl: getRandomImage(i),
+        moodTag: t.moodTag || "Vibe",
+        reason: t.reason,
+        previewUrl: null
+      });
+    }
+  }
 
   return {
-    tracks,
+    tracks: enrichedTracks,
     introScript: json.introScript || "Welcome to your personalized session."
   };
 };
@@ -140,7 +164,7 @@ export const generateSpeechAudio = async (text: string, audioContext: AudioConte
       responseModalities: [Modality.AUDIO],
       speechConfig: {
         voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Fenrir' }, // 'Fenrir' has a deeper, more DJ-like tone usually
+          prebuiltVoiceConfig: { voiceName: 'Fenrir' }, 
         },
       },
     },

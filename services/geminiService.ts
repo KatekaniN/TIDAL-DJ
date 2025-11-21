@@ -2,18 +2,22 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { Track } from "../types";
 import { decodeBase64, decodeAudioData } from "./audioUtils";
 
-const API_KEY = process.env.API_KEY || ''; // Ensure this is set in your environment
+// Helper to get the client instance with the latest key
+const getAiClient = () => {
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) {
+    throw new Error("API Key is missing. Please check your environment variables.");
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
-const ai = new GoogleGenAI({ apiKey: API_KEY });
-
-// --- Mock Data Helper for Images ---
 const getRandomImage = (id: number) => `https://picsum.photos/seed/${id}/400/400`;
 
 /**
  * Generates a playlist based on the user's mood/prompt.
  */
 export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[], introScript: string }> => {
-  if (!API_KEY) throw new Error("API Key is missing");
+  const ai = getAiClient();
 
   const prompt = `
     You are a world-class radio DJ for a high-end music streaming service called TIDAL.
@@ -64,17 +68,27 @@ export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[],
     }
   });
 
-  const json = JSON.parse(response.text || "{}");
+  let jsonStr = response.text || "{}";
+  // Defensive cleanup in case of markdown wrapping
+  jsonStr = jsonStr.replace(/```json\n?|```/g, "").trim();
+
+  let json;
+  try {
+    json = JSON.parse(jsonStr);
+  } catch (e) {
+    console.error("Failed to parse JSON:", jsonStr);
+    throw new Error("AI response was not valid JSON.");
+  }
   
   // Map to our Track interface
   const tracks: Track[] = (json.tracks || []).map((t: any, i: number) => ({
     id: `track-${Date.now()}-${i}`,
-    title: t.title,
-    artist: t.artist,
-    album: t.album,
+    title: t.title || "Unknown Title",
+    artist: t.artist || "Unknown Artist",
+    album: t.album || "Unknown Album",
     duration: 180 + Math.floor(Math.random() * 60), // Simulated duration 3-4 mins
     coverUrl: getRandomImage(Math.floor(Math.random() * 10000)),
-    moodTag: t.moodTag,
+    moodTag: t.moodTag || "Vibe",
     reason: t.reason
   }));
 
@@ -88,32 +102,36 @@ export const generatePlaylist = async (mood: string): Promise<{ tracks: Track[],
  * Generates an interlude script between two tracks.
  */
 export const generateInterludeScript = async (prevTrack: Track, nextTrack: Track, mood: string): Promise<string> => {
-  if (!API_KEY) return "Coming up next.";
+  try {
+    const ai = getAiClient();
+    const prompt = `
+      You are a DJ. 
+      Current Vibe: ${mood}.
+      Just finished: "${prevTrack.title}" by ${prevTrack.artist}.
+      Next up: "${nextTrack.title}" by ${nextTrack.artist}.
+      
+      Write a very short (1-2 sentences), smooth transition script. 
+      Mention a fun fact about the artist or why these songs fit together.
+      Make it sound conversational and cool. No "DJ:" prefix.
+    `;
 
-  const prompt = `
-    You are a DJ. 
-    Current Vibe: ${mood}.
-    Just finished: "${prevTrack.title}" by ${prevTrack.artist}.
-    Next up: "${nextTrack.title}" by ${nextTrack.artist}.
-    
-    Write a very short (1-2 sentences), smooth transition script. 
-    Mention a fun fact about the artist or why these songs fit together.
-    Make it sound conversational and cool. No "DJ:" prefix.
-  `;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+    });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: prompt,
-  });
-
-  return response.text || `Next up is ${nextTrack.title}.`;
+    return response.text || `Next up is ${nextTrack.title}.`;
+  } catch (error) {
+    console.warn("Failed to generate interlude:", error);
+    return `Next up is ${nextTrack.title}.`;
+  }
 };
 
 /**
  * Converts text to speech using Gemini TTS.
  */
 export const generateSpeechAudio = async (text: string, audioContext: AudioContext): Promise<AudioBuffer> => {
-  if (!API_KEY) throw new Error("API Key missing");
+  const ai = getAiClient();
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",

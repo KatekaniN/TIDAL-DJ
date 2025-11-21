@@ -29,6 +29,17 @@ const App: React.FC = () => {
   // --- Core Orchestration ---
 
   const startSession = async (prompt: string) => {
+    // CRITICAL: Resume AudioContext immediately on user interaction (click)
+    // Browsers will block audio if we wait for the API call first.
+    const ctx = getAudioContext();
+    try {
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+    } catch (e) {
+      console.warn("Failed to resume audio context:", e);
+    }
+
     setIsLoading(true);
     try {
       // 1. Generate Session Data
@@ -44,16 +55,13 @@ const App: React.FC = () => {
       setQueue(tracks);
 
       // 3. Generate Intro Audio
-      const ctx = getAudioContext();
-      if (ctx.state === 'suspended') await ctx.resume();
-      
       const introAudio = await GeminiService.generateSpeechAudio(introScript, ctx);
 
       // 4. Play Intro Commentary
       playCommentary(introAudio, introScript);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to start session:", error);
-      alert("Could not start DJ session. Check API Key.");
+      alert(`Could not start DJ session. Error: ${error.message || 'Unknown error'}`);
       setPlaybackState(PlaybackState.IDLE);
     } finally {
       setIsLoading(false);
@@ -65,7 +73,9 @@ const App: React.FC = () => {
     setDjText(text);
 
     const ctx = getAudioContext();
-    if (audioSourceRef.current) audioSourceRef.current.stop();
+    if (audioSourceRef.current) {
+        try { audioSourceRef.current.stop(); } catch(e) {}
+    }
     
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -114,7 +124,6 @@ const App: React.FC = () => {
       
       if (shouldPlayCommentary && session) {
         try {
-          setPlaybackState(PlaybackState.LOADING_SESSION); // Show a loading state briefly if needed
           // Generate Interlude
           const script = await GeminiService.generateInterludeScript(finishedTrack, nextTrack, session.mood);
           const ctx = getAudioContext();
@@ -135,18 +144,23 @@ const App: React.FC = () => {
   };
 
   const handleSkip = () => {
-    if (audioSourceRef.current) audioSourceRef.current.stop();
+    if (audioSourceRef.current) {
+        try { audioSourceRef.current.stop(); } catch(e) {}
+    }
     if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
     playNextTrack();
   };
 
   const handleTogglePlay = () => {
+    const ctx = getAudioContext();
     if (playbackState === PlaybackState.PLAYING_TRACK) {
        setPlaybackState(PlaybackState.PAUSED);
        // Pause logic for timer... (Simplified: just stop timer)
        if (trackTimerRef.current) clearTimeout(trackTimerRef.current);
+       if (ctx.state === 'running') ctx.suspend();
     } else if (playbackState === PlaybackState.PAUSED) {
        setPlaybackState(PlaybackState.PLAYING_TRACK);
+       if (ctx.state === 'suspended') ctx.resume();
        // Resume logic (Simplified: just restart next track call)
        trackTimerRef.current = setTimeout(() => {
           if (currentTrack && queue) handleTrackEnd(currentTrack, queue);
@@ -177,7 +191,7 @@ const App: React.FC = () => {
 
         {/* Main View Switcher */}
         <main className="flex-1 flex items-center justify-center">
-          {playbackState === PlaybackState.IDLE || playbackState === PlaybackState.LOADING_SESSION && !currentTrack ? (
+          {playbackState === PlaybackState.IDLE || (playbackState === PlaybackState.LOADING_SESSION && !currentTrack) ? (
             <DjBooth onStartSession={startSession} isLoading={isLoading} />
           ) : (
             <Player 

@@ -1,0 +1,5 @@
+{
+  "name": "TIDAL Generative DJ",
+  "description": "An AI-powered DJ experience that curates music and generates personalized spoken commentary based on your mood and context.",
+  "requestFramePermissions": []
+}
